@@ -27,13 +27,18 @@ jobs:
             --config p/owasp-top-ten \
             --error
 
+
   trivy:
     name: SCA + IaC (Trivy)
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
 
-      - name: Scan dependencies
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Scan dependencies (SCA)
+        id: sca
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
@@ -42,13 +47,33 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: '1'
 
-      - name: Scan Dockerfile and configuration
+      - name: Scan Dockerfile and configuration (IaC)
+        id: iac
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: '1'
+
+      - name: Security Gate - fail on findings
+        if: always()
+        env:
+          SCA_RESULT: ${{ steps.sca.outcome }}
+          IAC_RESULT: ${{ steps.iac.outcome }}
+        run: |
+          echo "SCA result: $SCA_RESULT"
+          echo "IaC result: $IAC_RESULT"
+
+          if [[ "$SCA_RESULT" != "success" ||
+                "$IAC_RESULT" != "success" ]]; then
+            echo "Security Gate FAILED"
+            exit 1
+          fi
+
+          echo "Security Gate PASSED"
+
 
 
   gitleaks:
