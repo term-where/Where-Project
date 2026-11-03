@@ -1,0 +1,161 @@
+<svg viewBox="0 0 1040 740" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#334155"/>
+    </marker>
+  </defs>
+  <style>
+    .proc{fill:#e8f0fe;stroke:#1a56db;stroke-width:1.5;}
+    .store{fill:#fff7ed;stroke:#c2410c;stroke-width:1.5;}
+    .ext{fill:#f0fdf4;stroke:#15803d;stroke-width:1.5;}
+    .atk{fill:#fef2f2;stroke:#dc2626;stroke-width:1.5;stroke-dasharray:5 3;}
+    .shell{fill:#f3f4f6;stroke:#374151;stroke-width:1.5;}
+    .cont{fill:#fcfcfd;stroke:#9ca3af;stroke-width:1.6;}
+    .tb{fill:none;stroke:#dc2626;stroke-width:1.4;stroke-dasharray:7 4;}
+    .edge{stroke:#334155;stroke-width:1.3;fill:none;marker-end:url(#arrow);}
+    .edge-l{stroke:#94a3b8;stroke-width:1.1;fill:none;marker-end:url(#arrow);}
+    .ret{stroke:#94a3b8;stroke-width:1;fill:none;stroke-dasharray:3 3;marker-end:url(#arrow);}
+    .name{fill:#0f172a;font-size:13px;font-weight:600;}
+    .sub{fill:#475569;font-size:10px;}
+    .flow{fill:#334155;font-size:10px;}
+    .tbl{fill:#dc2626;font-size:11px;font-weight:700;}
+    .ftxt{fill:#ffffff;font-size:9.5px;font-weight:700;}
+    .title{fill:#0f172a;font-size:17px;font-weight:700;}
+    .leg{fill:#334155;font-size:11px;}
+  </style>
+
+  <text x="520" y="34" text-anchor="middle" class="title">NoteVault — Level-1 Data-Flow Diagram &amp; Trust Boundaries</text>
+
+  <!-- Container (B4) -->
+  <rect class="cont" x="252" y="72" width="773" height="582" rx="8"/>
+  <text x="1017" y="66" text-anchor="end" class="tbl">B4 — Container ↔ Host</text>
+  <text x="262" y="92" class="sub">NoteVault Flask container · base python:3.12 · process runs as root (F-12) · debug=True (F-10)</text>
+
+  <!-- B1 network boundary -->
+  <line class="tb" x1="236" y1="80" x2="236" y2="648"/>
+  <text x="240" y="648" class="tbl">B1 — Network (client untrusted)</text>
+
+  <!-- B2 data store boundary -->
+  <rect class="tb" x="800" y="138" width="205" height="248" rx="8"/>
+  <text x="803" y="132" class="tbl">B2 — Data store</text>
+
+  <!-- B3 shell boundary -->
+  <rect class="tb" x="556" y="560" width="196" height="78" rx="8"/>
+  <text x="560" y="554" class="tbl">B3 — OS shell</text>
+
+  <!-- External entities -->
+  <g text-anchor="middle">
+    <rect class="ext" x="30" y="168" width="168" height="58" rx="4"/>
+    <text class="name" x="114" y="193">User / Browser</text>
+    <text class="sub" x="114" y="210">anonymous → authenticated</text>
+
+    <rect class="atk" x="30" y="432" width="168" height="58" rx="4"/>
+    <text class="name" x="114" y="457">Attacker</text>
+    <text class="sub" x="114" y="474">malicious client</text>
+  </g>
+
+  <!-- Processes -->
+  <g text-anchor="middle">
+    <rect class="proc" x="300" y="150" width="178" height="56" rx="11"/>
+    <text class="name" x="389" y="174">P1 · Authenticate</text>
+    <text class="sub" x="389" y="191">/login · /register</text>
+
+    <rect class="proc" x="300" y="250" width="178" height="56" rx="11"/>
+    <text class="name" x="389" y="274">P2 · Verify session</text>
+    <text class="sub" x="389" y="291">current_user() — JWT</text>
+
+    <rect class="proc" x="300" y="356" width="198" height="56" rx="11"/>
+    <text class="name" x="399" y="380">P3 · Notes &amp; Search</text>
+    <text class="sub" x="399" y="397">/ · /notes · /search · /api/notes</text>
+
+    <rect class="proc" x="300" y="462" width="178" height="56" rx="11"/>
+    <text class="name" x="389" y="486">P4 · Admin dump</text>
+    <text class="sub" x="389" y="503">/admin</text>
+
+    <rect class="proc" x="560" y="462" width="160" height="56" rx="11"/>
+    <text class="name" x="640" y="486">P5 · Export</text>
+    <text class="sub" x="640" y="503">/export</text>
+  </g>
+
+  <!-- Data stores -->
+  <g text-anchor="middle">
+    <rect class="store" x="828" y="168" width="152" height="54" rx="3"/>
+    <line x1="828" y1="186" x2="980" y2="186" stroke="#c2410c" stroke-width="1"/>
+    <text class="name" x="904" y="183">D1 · users</text>
+    <text class="sub" x="904" y="208">username · md5 pw · role</text>
+
+    <rect class="store" x="828" y="300" width="152" height="54" rx="3"/>
+    <line x1="828" y1="318" x2="980" y2="318" stroke="#c2410c" stroke-width="1"/>
+    <text class="name" x="904" y="315">D2 · notes</text>
+    <text class="sub" x="904" y="340">owner · title · body</text>
+  </g>
+
+  <!-- Shell -->
+  <g text-anchor="middle">
+    <rect class="shell" x="572" y="574" width="164" height="50" rx="4"/>
+    <text class="name" x="654" y="595">/bin/sh (subprocess)</text>
+    <text class="sub" x="654" y="612">shell=True · runs as root</text>
+  </g>
+
+  <!-- Flows -->
+  <!-- Browser -> P1 -->
+  <path class="edge" d="M198,188 L300,174"/>
+  <!-- Browser -> P2 -->
+  <path class="edge" d="M198,206 L300,272"/>
+  <!-- Browser -> P3 -->
+  <path class="edge" d="M150,226 C 180,330 230,386 300,386"/>
+  <!-- Attacker -> P4 -->
+  <path class="edge" d="M198,470 L300,492"/>
+  <!-- Attacker -> P5 (routed below P4) -->
+  <path class="edge" d="M198,486 C 320,560 450,548 560,516"/>
+  <!-- P2 -> P3 identity -->
+  <path class="edge-l" d="M389,306 L397,356"/>
+  <!-- P1 -> D1 -->
+  <path class="edge" d="M478,176 C 650,176 700,190 828,192"/>
+  <!-- P2 -> D1 role lookup -->
+  <path class="edge-l" d="M478,282 C 640,270 700,215 828,205"/>
+  <!-- P3 -> D2 -->
+  <path class="edge" d="M498,388 C 650,384 720,330 828,326"/>
+  <!-- P4 -> D1 dump -->
+  <path class="edge" d="M478,482 C 720,470 780,250 862,222"/>
+  <!-- P5 -> Shell -->
+  <path class="edge" d="M644,518 L652,574"/>
+  <!-- Shell -> P5 output -->
+  <path class="ret" d="M700,574 C 712,545 710,535 702,518"/>
+
+  <!-- Flow labels -->
+  <g text-anchor="middle">
+    <text class="flow" x="252" y="176">credentials (POST)</text>
+    <text class="flow" x="250" y="250">session cookie (JWT)</text>
+    <text class="flow" x="225" y="360">note CRUD / search q</text>
+    <text class="flow" x="232" y="463">forged admin session</text>
+    <text class="flow" x="380" y="560">export?fmt=…</text>
+    <text class="flow" x="408" y="336">identity (sub)</text>
+    <text class="flow" x="640" y="168">verify / insert user</text>
+    <text class="flow" x="610" y="258">role lookup</text>
+    <text class="flow" x="712" y="346">read / write notes</text>
+    <text class="flow" x="726" y="452">SELECT * users (hashes)</text>
+    <text class="flow" x="600" y="534">fmt → subprocess</text>
+  </g>
+
+  <!-- Finding tags -->
+  <g>
+    <g><rect x="236" y="140" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="256" y="152" text-anchor="middle">F-02</text></g>
+    <g><rect x="236" y="214" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="256" y="226" text-anchor="middle">F-03</text></g>
+    <g><rect x="585" y="140" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="605" y="152" text-anchor="middle">F-01</text></g>
+    <g><rect x="630" y="140" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="650" y="152" text-anchor="middle">F-06</text></g>
+    <g><rect x="232" y="368" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="252" y="380" text-anchor="middle">F-05</text></g>
+    <g><rect x="276" y="368" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="296" y="380" text-anchor="middle">F-08</text></g>
+    <g><rect x="548" y="398" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="568" y="410" text-anchor="middle">F-07</text></g>
+    <g><rect x="700" y="526" width="40" height="17" rx="8.5" fill="#dc2626"/><text class="ftxt" x="720" y="538" text-anchor="middle">F-04</text></g>
+  </g>
+
+  <!-- Legend -->
+  <g>
+    <rect class="proc" x="40" y="690" width="24" height="16" rx="6"/><text class="leg" x="72" y="702">Process</text>
+    <rect class="store" x="150" y="690" width="24" height="16" rx="2"/><text class="leg" x="182" y="702">Data store</text>
+    <rect class="ext" x="268" y="690" width="24" height="16" rx="2"/><text class="leg" x="300" y="702">External entity</text>
+    <line class="tb" x1="420" y1="698" x2="448" y2="698"/><text class="leg" x="454" y="702">Trust boundary</text>
+    <rect x="566" y="690" width="40" height="16" rx="8" fill="#dc2626"/><text class="ftxt" x="586" y="702" text-anchor="middle">F-nn</text><text class="leg" x="612" y="702">Vulnerability finding</text>
+  </g>
+</svg>
