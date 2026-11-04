@@ -1,209 +1,234 @@
-"""
-NoteVault — a small team note-sharing web app + JSON API (term-project starter).
-
-This is your TERM-PROJECT TARGET. It is a normal-looking app that contains several
-realistic security weaknesses. Your job (see project/README.md): threat-model it,
-find and document the vulnerabilities, fix them, and harden the build/release.
-
-We do NOT list the vulnerabilities here — finding them is the assignment.
-
-Run:  docker compose up   (then http://localhost:8080)
-"""
+"""NoteVault secured reference implementation for the term-project laboratory."""
 import hashlib
 import hmac
 import os
 import sqlite3
-import subprocess
+from datetime import datetime, timedelta, timezone
+from flask_wtf.csrf import CSRFProtect
 
-import jwt  # PyJWT
-from flask import Flask, request, jsonify, render_template_string, redirect, make_response
+import jwt
+
+from flask import Flask, Response, jsonify, make_response, redirect, render_template, request
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
-DB = "/tmp/notevault.db"
-SECRET = "notevault-dev-secret"  # used to sign session tokens
-
-# Anti-copying: every team's build is seeded with a marker derived from their own TEAM_ID, so
-# any evidence a team submits (SQLi dump, IDOR response, admin-panel screenshot) that shows the
-# admin's notes carries a value traceable to exactly one team — see instructor/anti-cheating.md.
+CSRF = CSRFProtect(app)
+DB = os.environ.get("NOTEVAULT_DB", "/tmp/notevault.db")
+SECRET = os.environ["APP_SECRET"]
+if len(SECRET) < 32:
+    raise RuntimeError("APP_SECRET must contain at least 32 characters")
+app.config["SECRET_KEY"] = SECRET
+csrf = CSRFProtect(app)
 TEAM_ID = os.environ.get("TEAM_ID", "unassigned")
-TEAM_SALT = os.environ.get("TEAM_SALT", "notevault-anti-copy-dev-salt")
-
-
-def team_marker():
-    return hmac.new(TEAM_SALT.encode(), TEAM_ID.encode(), hashlib.sha256).hexdigest()[:12]
-
-
-PAGE = """
-<!doctype html><title>NoteVault</title>
-<h1>NoteVault</h1>
-{% if user %}<p>Signed in as <b>{{ user }}</b> · <a href="/logout">logout</a>
-  {% if is_admin %}· <a href="/admin">admin</a>{% endif %}</p>
-<form method=post action="/notes"><input name=title placeholder=title>
-  <input name=body placeholder=note><button>Add note</button></form>
-<h3>Your notes</h3>{{ notes_html|safe }}
-<form action="/search"><input name=q placeholder="search notes"><button>Search</button></form>
-{% else %}
-<form method=post action="/login">user <input name=username> pass <input name=password type=password>
-  <button>Login</button></form>
-<form method=post action="/register">new: <input name=username> <input name=password type=password>
-  <button>Register</button></form>
-{% endif %}
-"""
-
+TEAM_SALT = os.environ.get("TEAM_SALT", "")
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
+app.config["SESSION_COOKIE_NAME"] = "csrf_session"
 
 def db():
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(DB, timeout=10)
     con.row_factory = sqlite3.Row
     return con
 
 
-def seed():
+def initialize_db():
+    """Create tables only when missing. Never erase existing user data on restart."""
     con = db()
-    con.executescript(
-        "DROP TABLE IF EXISTS users; DROP TABLE IF EXISTS notes;"
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, password TEXT, role TEXT);"
-        "CREATE TABLE notes (id INTEGER PRIMARY KEY, owner TEXT, title TEXT, body TEXT);"
-    )
-    con.executemany("INSERT INTO users (username, password, role) VALUES (?,?,?)",
-                    [("alice", hashlib.md5(b"alicepw").hexdigest(), "user"),
-                     ("admin", hashlib.md5(b"admin123").hexdigest(), "admin")])
-    con.executemany("INSERT INTO notes (owner, title, body) VALUES (?,?,?)",
-                    [("alice", "groceries", "milk, eggs"),
-                     ("admin", "infra", "prod db password is hunter2"),
-                     ("admin", "build-tag", "team=%s marker=%s" % (TEAM_ID, team_marker()))])
-    con.commit()
-    con.close()
+    try:
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+                password TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user');
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY, owner TEXT NOT NULL,
+                title TEXT NOT NULL, body TEXT NOT NULL);
+        """)
+        # Only bootstrap admin on a fresh DB and when the operator supplies a secret.
+        if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            password = os.environ.get("ADMIN_BOOTSTRAP_PASSWORD", "")
+            if password:
+                if len(password) < 12:
+                    raise RuntimeError("ADMIN_BOOTSTRAP_PASSWORD must be at least 12 characters")
+                con.execute(
+                    "INSERT INTO users(username,password,role) VALUES(?,?,?)",
+                    ("admin", generate_password_hash(password, method="scrypt"), "admin"),
+                )
+                if TEAM_SALT:
+                    marker = hmac.new(TEAM_SALT.encode(), TEAM_ID.encode(), hashlib.sha256).hexdigest()[:12]
+                    con.execute(
+                        "INSERT INTO notes(owner,title,body) VALUES(?,?,?)",
+                        ("admin", "build-tag", f"team={TEAM_ID} marker={marker}"),
+                    )
+                con.commit()
+    finally:
+        con.close()
 
 
 def current_user():
-    tok = request.cookies.get("session", "")
-    if not tok:
+    token = request.cookies.get("session", "")
+    if not token:
         return None
     try:
-        data = jwt.decode(tok, SECRET, algorithms=["HS256", "none"])
-        return data.get("sub")
-    except Exception:
+        data = jwt.decode(token, SECRET, algorithms=["HS256"], options={"require": ["sub", "exp", "iat"]})
+        username = data.get("sub")
+        if not isinstance(username, str):
+            return None
+        with db() as con:
+            row = con.execute("SELECT username FROM users WHERE username = ?", (username,)).fetchone()
+        return row["username"] if row else None
+    except (jwt.InvalidTokenError, ValueError, TypeError):
         return None
 
 
 def role_of(username):
-    con = db()
-    r = con.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
-    con.close()
-    return r["role"] if r else None
+    with db() as con:
+        row = con.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
+    return row["role"] if row else None
 
 
-@app.route("/")
+def credentials():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    return (request.form.get("username") or data.get("username"),
+            request.form.get("password") or data.get("password"))
+
+
+@app.after_request
+def security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/")
 def home():
     user = current_user()
-    notes_html = ""
+    notes = []
     if user:
-        con = db()
-        rows = con.execute("SELECT id,title,body FROM notes WHERE owner = ?", (user,)).fetchall()
-        con.close()
-        notes_html = "".join(
-            "<li>#%d <b>%s</b>: %s</li>" % (r["id"], r["title"], r["body"]) for r in rows)
-    return render_template_string(PAGE, user=user, is_admin=(user and role_of(user) == "admin"),
-                                  notes_html=notes_html)
+        with db() as con:
+            notes = con.execute("SELECT id,title,body FROM notes WHERE owner = ?", (user,)).fetchall()
+    return render_template("home.html", user=user, is_admin=(user is not None and role_of(user) == "admin"), notes=notes)
 
 
-@app.route("/register", methods=["POST"])
+@app.post("/register")
 def register():
-    username = request.form.get("username") or (request.json or {}).get("username")
-    password = request.form.get("password") or (request.json or {}).get("password")
-    role = request.form.get("role") or (request.json or {}).get("role") or "user"
+    username, password = credentials()
+    if not isinstance(username, str) or not isinstance(password, str) or not username.strip():
+        return "invalid registration", 400
+    if len(username) > 80 or not (12 <= len(password) <= 1024):
+        return "invalid registration", 400
+    password_hash = generate_password_hash(password, method="scrypt")
     con = db()
-    con.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)",
-                (username, hashlib.md5(password.encode()).hexdigest(), role))
-    con.commit()
-    con.close()
+    try:
+        con.execute("INSERT INTO users(username,password,role) VALUES(?,?,?)", (username, password_hash, "user"))
+        con.commit()
+    except sqlite3.IntegrityError:
+        return "username already exists", 409
+    finally:
+        con.close()
     return redirect("/")
 
 
-@app.route("/login", methods=["POST"])
+@app.post("/login")
 def login():
-    username = request.form.get("username") or (request.json or {}).get("username")
-    password = request.form.get("password") or (request.json or {}).get("password")
-    con = db()
-    q = "SELECT * FROM users WHERE username = '%s' AND password = '%s'" % (
-        username, hashlib.md5((password or "").encode()).hexdigest())
-    row = con.execute(q).fetchone()
-    con.close()
-    if not row:
+    username, password = credentials()
+    if not isinstance(username, str) or not isinstance(password, str):
         return "login failed", 401
-    tok = jwt.encode({"sub": username}, SECRET, algorithm="HS256")
-    resp = make_response(redirect("/"))
-    resp.set_cookie("session", tok)
-    return resp
+    con = db()
+    try:
+        row = con.execute("SELECT password FROM users WHERE username = ?", (username,)).fetchone()
+        if not row:
+            return "login failed", 401
+        stored_hash = row["password"]
+        # Old MD5 accounts require a password reset; never keep MD5 login paths in production.
+        valid = not (len(stored_hash) == 32 and all(c in "0123456789abcdef" for c in stored_hash)) and check_password_hash(stored_hash, password)
+        if not valid:
+            return "login failed", 401
+    finally:
+        con.close()
+    now = datetime.now(timezone.utc)
+    token = jwt.encode({"sub": username, "iat": now, "exp": now + timedelta(hours=1)}, SECRET, algorithm="HS256")
+    response = make_response(redirect("/"))
+    response.set_cookie("session", token, httponly=True, secure=COOKIE_SECURE, samesite="Lax", max_age=3600)
+    return response
 
 
-@app.route("/logout")
+@app.get("/logout")
 def logout():
-    resp = make_response(redirect("/"))
-    resp.delete_cookie("session")
-    return resp
+    response = make_response(redirect("/"))
+    response.delete_cookie("session")
+    return response
 
 
-@app.route("/notes", methods=["POST"])
+@app.post("/notes")
 def add_note():
     user = current_user()
     if not user:
         return "auth required", 401
-    title = request.form.get("title", "")
-    body = request.form.get("body", "")
-    con = db()
-    con.execute("INSERT INTO notes (owner,title,body) VALUES (?,?,?)", (user, title, body))
-    con.commit()
-    con.close()
+    title, body = request.form.get("title", ""), request.form.get("body", "")
+    if len(title) > 200 or len(body) > 10000:
+        return "note too long", 400
+    with db() as con:
+        con.execute("INSERT INTO notes(owner,title,body) VALUES(?,?,?)", (user, title, body))
     return redirect("/")
 
 
-@app.route("/api/notes/<int:nid>")
+@app.get("/api/notes/<int:nid>")
 def api_note(nid):
-    if not current_user():
+    user = current_user()
+    if not user:
         return jsonify(error="auth required"), 401
-    con = db()
-    r = con.execute("SELECT id,owner,title,body FROM notes WHERE id = ?", (nid,)).fetchone()
-    con.close()
-    return (jsonify(dict(r)) if r else (jsonify(error="not found"), 404))
+    with db() as con:
+        note = con.execute("SELECT id,owner,title,body FROM notes WHERE id = ? AND owner = ?", (nid, user)).fetchone()
+    return jsonify(dict(note)) if note else (jsonify(error="not found"), 404)
 
 
-@app.route("/search")
+@app.get("/search")
 def search():
     user = current_user()
     if not user:
         return "auth required", 401
-    term = request.args.get("q", "")
-    con = db()
-    q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)
-    rows = con.execute(q).fetchall()
-    con.close()
-    return render_template_string("<a href=/>back</a><ul>" +
-        "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) + "</ul>")
+    term = request.args.get("q", "")[:200]
+    term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    with db() as con:
+        notes = con.execute(
+            "SELECT title,body FROM notes WHERE owner = ? AND body LIKE ? ESCAPE '\\'",
+            (user, f"%{term}%"),
+        ).fetchall()
+    return render_template("search.html", notes=notes)
 
 
-@app.route("/admin")
+@app.get("/admin")
 def admin():
     user = current_user()
     if not user or role_of(user) != "admin":
         return "forbidden", 403
-    con = db()
-    rows = con.execute("SELECT id,username,password,role FROM users").fetchall()
-    con.close()
-    return jsonify([dict(r) for r in rows])
+    with db() as con:
+        rows = con.execute("SELECT id,username,role FROM users").fetchall()
+    return jsonify([dict(row) for row in rows])
 
 
-@app.route("/export")
+@app.get("/export")
 def export():
-    if not current_user():
+    user = current_user()
+    if not user:
         return "auth required", 401
     fmt = request.args.get("fmt", "txt")
-    # convenience "export" feature
-    out = subprocess.run("echo exporting notes as " + fmt, shell=True,
-                         capture_output=True, text=True)
-    return "<pre>%s</pre>" % out.stdout
+    if fmt != "txt":
+        return "unsupported export format", 400
+    with db() as con:
+        rows = con.execute("SELECT title,body FROM notes WHERE owner = ?", (user,)).fetchall()
+    content = "\n\n".join(f"{row['title']}\n{row['body']}" for row in rows)
+    return Response(content, content_type="text/plain; charset=utf-8", headers={"Content-Disposition": "attachment; filename=notes.txt"})
 
+
+initialize_db()
 
 if __name__ == "__main__":
-    seed()
-    app.run(host="0.0.0.0", port=8080, debug=True)
+   app.run(
+    host=os.environ.get("BIND_HOST", "127.0.0.1"),
+    port=8080,
+    debug=False
+)
