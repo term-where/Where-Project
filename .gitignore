@@ -5,3 +5,8 @@ __pycache__/
 .env.*
 !.env.example
 *.log
+
+# Local artifacts
+.npm-cache/
+cosign.key
+*.tar
