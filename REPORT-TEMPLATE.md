@@ -537,12 +537,112 @@ References for checking the mapping and implementation:
 
 ---
 
-## 6. Supply-Chain Hardening  *(15 pts)*
-- **SBOM** (CycloneDX) generated — attach `sbom.json`, note component count.
-- **Artifact signed & verified** with Cosign — paste the `cosign verify` output.
-- One-paragraph **SLSA** self-assessment (which level, why).
+## 6. Supply-Chain Hardening *(15 pts)*
 
----
+### 6.1 Software Bill of Materials (SBOM)
+
+A Software Bill of Materials (SBOM) was generated for the NoteVault Docker image using Trivy. The SBOM follows the CycloneDX 1.7 specification and contains **483 components**, including operating system packages and application dependencies.
+
+- **Tool:** Trivy v0.74.0
+- **Target Image:** `starter-app-notevault:latest`
+- **Format:** CycloneDX 1.7
+- **Output:** `starter-app/sbom.json`
+- **Total Components:** 483
+
+**Command:**
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD:/output" \
+  aquasec/trivy:latest image \
+  --format cyclonedx \
+  --output /output/sbom.json \
+  starter-app-notevault:latest
+```
+
+**Verification Result:**
+
+```text
+Format: CycloneDX
+Version: 1.7
+Components: 483
+```
+**Evidence — SBOM Verification**
+![SBOM Verification](img/sec6/01-sbom-verification.png)
+
+The generated SBOM provides visibility into the dependencies included in the Docker image. This information supports dependency management, vulnerability tracking, and software supply-chain risk assessment.
+
+**Evidence:** `starter-app/sbom.json` and a screenshot showing the SBOM verification results.
+
+### 6.2 Artifact Signing and Verification with Cosign
+
+The NoteVault Docker image was exported as a TAR archive and digitally signed using Cosign v3.1.4. The signature was verified using the corresponding public key to confirm that the artifact had not been modified after signing.
+
+**Step 1 — Export Docker Image**
+
+```bash
+docker save -o notevault-image.tar starter-app-notevault:latest
+```
+
+**Step 2 — Sign Artifact**
+
+```bash
+cosign sign-blob \
+  --key cosign.key \
+  --bundle notevault.sigstore.json \
+  notevault-image.tar
+```
+
+**Step 3 — Verify Signature**
+
+```bash
+cosign verify-blob \
+  --key cosign.pub \
+  --bundle notevault.sigstore.json \
+  notevault-image.tar
+```
+
+**Verification Result:**
+
+```text
+Verified OK
+Exit Code: 0
+```
+![Cosign Verified OK](img/sec6/02-cosign-verified.png)
+
+The successful verification confirms the integrity and authenticity of the archive relative to the signing key used. The private key (`cosign.key`) is excluded from Git to prevent unauthorized use.
+
+**Evidence:**
+- `starter-app/cosign.pub` — Public verification key
+- `starter-app/notevault.sigstore.json` — Signature bundle
+- Screenshot showing `Verified OK` and exit code 0
+
+**Limitation:** This implementation signs an exported Docker image archive using `cosign sign-blob`. It does not yet sign a container image digest stored in a registry. Registry-based image signing should be implemented for the final release if required by the project's release process.
+
+### 6.3 SLSA Self-Assessment
+
+The current NoteVault project uses a local Docker build process and manually signs the exported image archive. Although we have generated an SBOM and verified its digital signature, the build process does not yet generate trusted, verifiable provenance.
+
+Therefore, the project does not currently claim SLSA Build Level 1 or higher.
+
+To improve software supply-chain security, the team plans to automate image builds through GitHub Actions, generate provenance attestations, pin dependencies and GitHub Actions to immutable references, and sign the final release artifact.
+
+This would improve build traceability, integrity verification, and protection against software supply-chain attacks.
+
+### 6.4 Final Release Considerations
+
+The current SBOM and signature were generated from the starter application image before all security remediations were completed.
+
+After the development team finishes fixing the identified vulnerabilities, the final Docker image must be rebuilt. A new CycloneDX SBOM must then be generated, and the final artifact must be signed and verified again.
+
+This ensures that the submitted supply-chain evidence corresponds to the actual remediated release.
+**Generated Artifacts:**
+
+- [CycloneDX SBOM](starter-app/sbom.json)
+- [Cosign Public Key](starter-app/cosign.pub)
+- [Cosign Signature Bundle](starter-app/notevault.sigstore.json)
+
 
 ## 7. Security CI Pipeline  *(10 pts)*
 - Link to the GitHub Actions workflow (SAST + SCA + secret scanning).

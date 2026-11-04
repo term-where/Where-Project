@@ -5,8 +5,10 @@ __pycache__/
 .env.*
 !.env.example
 *.log
-
-# Local artifacts
-.npm-cache/
-cosign.key
+# Local signing artifacts
 *.tar
+cosign.key
+*.sig
+*.bundle
+# Local npm cache
+.npm-cache/
