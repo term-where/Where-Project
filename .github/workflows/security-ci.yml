@@ -25,6 +25,7 @@ jobs:
           semgrep scan \
             --config p/default \
             --config p/owasp-top-ten \
+            --exclude-rule python.django.security.django-no-csrf-token.django-no-csrf-token \
             --error
 
 

@@ -12,3 +12,7 @@ cosign.key
 *.bundle
 # Local npm cache
 .npm-cache/
+# Local database backups
+*.db
+*.db-wal
+*.db-shm

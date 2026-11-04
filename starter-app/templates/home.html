@@ -1,0 +1,55 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoteVault</title>
+</head>
+<body>
+  <h1>NoteVault</h1>
+
+  {% if user %}
+    <p>
+      Signed in as <b>{{ user }}</b> · <a href="/logout">logout</a>
+      {% if is_admin %} · <a href="/admin">admin</a>{% endif %}
+    </p>
+
+    <form method="post" action="/notes">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input name="title" placeholder="title" maxlength="200" required>
+      <input name="body" placeholder="note" maxlength="10000" required>
+      <button type="submit">Add note</button>
+    </form>
+
+    <h3>Your notes</h3>
+    <ul>
+      {% for note in notes %}
+        <li>#{{ note['id'] }} <b>{{ note['title'] }}</b>: {{ note['body'] }}</li>
+      {% endfor %}
+    </ul>
+
+    <form method="get" action="/search">
+      <input name="q" placeholder="search notes">
+      <button type="submit">Search</button>
+    </form>
+
+  {% else %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      user <input name="username" autocomplete="username" required>
+      pass <input name="password" type="password"
+                  autocomplete="current-password" required>
+      <button type="submit">Login</button>
+    </form>
+
+    <form method="post" action="/register">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      new: <input name="username" autocomplete="username" required>
+      <input name="password" type="password"
+             autocomplete="new-password" minlength="12" required>
+      <button type="submit">Register</button>
+    </form>
+  {% endif %}
+</body>
+</html>
