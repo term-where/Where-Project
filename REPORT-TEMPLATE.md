@@ -537,19 +537,203 @@ References for checking the mapping and implementation:
 
 ---
 
-## 6. Supply-Chain Hardening  *(15 pts)*
-- **SBOM** (CycloneDX) generated — attach `sbom.json`, note component count.
-- **Artifact signed & verified** with Cosign — paste the `cosign verify` output.
-- One-paragraph **SLSA** self-assessment (which level, why).
+## 6. Supply-Chain Hardening *(15 pts)*
 
----
+### 6.1 Software Bill of Materials (SBOM)
 
-## 7. Security CI Pipeline  *(10 pts)*
-- Link to the GitHub Actions workflow (SAST + SCA + secret scanning).
-- Screenshot of a build **failing** on a HIGH/CRITICAL finding.
-- How the gate is configured (what fails the build).
+A Software Bill of Materials (SBOM) was generated for the NoteVault Docker image using Trivy. The SBOM follows the CycloneDX 1.7 specification and contains **483 components**, including operating system packages and application dependencies.
 
----
+- **Tool:** Trivy v0.74.0
+- **Target Image:** `starter-app-notevault:latest`
+- **Format:** CycloneDX 1.7
+- **Output:** `starter-app/sbom.json`
+- **Total Components:** 483
+
+**Command:**
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD:/output" \
+  aquasec/trivy:latest image \
+  --format cyclonedx \
+  --output /output/sbom.json \
+  starter-app-notevault:latest
+```
+
+**Verification Result:**
+
+```text
+Format: CycloneDX
+Version: 1.7
+Components: 483
+```
+**Evidence — SBOM Verification**
+![SBOM Verification](img/sec6/01-sbom-verification.png)
+
+The generated SBOM provides visibility into the dependencies included in the Docker image. This information supports dependency management, vulnerability tracking, and software supply-chain risk assessment.
+
+**Evidence:** `starter-app/sbom.json` and a screenshot showing the SBOM verification results.
+
+### 6.2 Artifact Signing and Verification with Cosign
+
+The NoteVault Docker image was exported as a TAR archive and digitally signed using Cosign v3.1.4. The signature was verified using the corresponding public key to confirm that the artifact had not been modified after signing.
+
+**Step 1 — Export Docker Image**
+
+```bash
+docker save -o notevault-image.tar starter-app-notevault:latest
+```
+
+**Step 2 — Sign Artifact**
+
+```bash
+cosign sign-blob \
+  --key cosign.key \
+  --bundle notevault.sigstore.json \
+  notevault-image.tar
+```
+
+**Step 3 — Verify Signature**
+
+```bash
+cosign verify-blob \
+  --key cosign.pub \
+  --bundle notevault.sigstore.json \
+  notevault-image.tar
+```
+
+**Verification Result:**
+
+```text
+Verified OK
+Exit Code: 0
+```
+![Cosign Verified OK](img/sec6/02-cosign-verified.png)
+
+The successful verification confirms the integrity and authenticity of the archive relative to the signing key used. The private key (`cosign.key`) is excluded from Git to prevent unauthorized use.
+
+**Evidence:**
+- `starter-app/cosign.pub` — Public verification key
+- `starter-app/notevault.sigstore.json` — Signature bundle
+- Screenshot showing `Verified OK` and exit code 0
+
+**Limitation:** This implementation signs an exported Docker image archive using `cosign sign-blob`. It does not yet sign a container image digest stored in a registry. Registry-based image signing should be implemented for the final release if required by the project's release process.
+
+### 6.3 SLSA Self-Assessment
+
+The current NoteVault project uses a local Docker build process and manually signs the exported image archive. Although we have generated an SBOM and verified its digital signature, the build process does not yet generate trusted, verifiable provenance.
+
+Therefore, the project does not currently claim SLSA Build Level 1 or higher.
+
+To improve software supply-chain security, the team plans to automate image builds through GitHub Actions, generate provenance attestations, pin dependencies and GitHub Actions to immutable references, and sign the final release artifact.
+
+This would improve build traceability, integrity verification, and protection against software supply-chain attacks.
+
+### 6.4 Final Release Considerations
+
+The current SBOM and signature were generated from the starter application image before all security remediations were completed.
+
+After the development team finishes fixing the identified vulnerabilities, the final Docker image must be rebuilt. A new CycloneDX SBOM must then be generated, and the final artifact must be signed and verified again.
+
+This ensures that the submitted supply-chain evidence corresponds to the actual remediated release.
+**Generated Artifacts:**
+
+- [CycloneDX SBOM](starter-app/sbom.json)
+- [Cosign Public Key](starter-app/cosign.pub)
+- [Cosign Signature Bundle](starter-app/notevault.sigstore.json)
+
+
+## 7. Security CI Pipeline *(10 pts)*
+
+### 7.1 GitHub Actions Security Pipeline
+
+An automated security CI pipeline was implemented for the NoteVault application using GitHub Actions. The workflow integrates Semgrep, Trivy, and Gitleaks to identify security vulnerabilities, insecure configurations, and exposed secrets.
+
+**Repository:** [Where-Project](https://github.com/term-where/Where-Project)
+
+**Workflow:** `.github/workflows/security-ci.yml`
+
+**Pull Request:** [Section 7 — Security CI Pipeline](https://github.com/term-where/Where-Project/pull/2)
+
+### 7.2 Security Scanning Results
+
+| Security Tool | Purpose | Result |
+|---|---|---|
+| Semgrep (SAST) | Static application security testing | FAIL — 34 blocking findings |
+| Trivy (SCA) | Dependency vulnerability scanning | FAIL — Dependency vulnerabilities detected |
+| Trivy (IaC) | Dockerfile configuration scanning | FAIL — 2 misconfigurations |
+| Gitleaks | Git history secret scanning | PASS — Scan completed successfully |
+| Security Gate | Enforce security policy | FAIL — Exit Code 1 |
+
+**Semgrep Findings**
+
+Semgrep detected 34 blocking security findings in the application. One confirmed example was the use of `debug=True` in Flask, which can expose sensitive debugging information.
+
+![Semgrep Security Findings](img/sec7/01-semgrep-failed.png)
+
+**Trivy Security Gate**
+
+Trivy completed both SCA and IaC scans. The security gate detected unsuccessful scan outcomes and exited with code 1.
+
+```text
+SCA result: failure
+IaC result: failure
+Security Gate FAILED
+Process completed with exit code 1.
+```
+
+![Trivy Security Gate](img/sec7/02-trivy-gate-failed.png)
+
+**Gitleaks Secret Scanning**
+
+Gitleaks successfully scanned the Git repository using its Docker CLI. The job passed without a reported secret finding.
+
+![Gitleaks Successful Scan](img/sec7/03-gitleaks-pass.png)
+
+### 7.3 Trivy IaC Findings
+
+Trivy identified two Dockerfile misconfigurations:
+
+| Rule ID | Severity | Description |
+|---|---|---|
+| DS-0002 | HIGH | Container does not explicitly use a non-root user |
+| DS-0031 | CRITICAL | Potential exposure of `APP_SECRET` through a Dockerfile environment variable |
+
+**Scan Summary:**
+
+- Total checks: 20
+- Successful checks: 18
+- Failed checks: 2
+- HIGH findings: 1
+- CRITICAL findings: 1
+
+These findings demonstrate that insecure container configurations can be detected automatically before changes are merged into the main branch.
+
+![Trivy IaC Findings](img/sec7/04-trivy-iac-findings.png)
+
+### 7.4 Security Gate Configuration
+
+The GitHub Actions pipeline enforces security checks through command exit codes.
+
+- **Semgrep:** Uses `--error` to fail when blocking security findings are detected.
+- **Trivy SCA:** Uses `exit-code: '1'` for HIGH/CRITICAL dependency vulnerabilities.
+- **Trivy IaC:** Uses `exit-code: '1'` for HIGH/CRITICAL configuration findings.
+- **Gitleaks:** Uses `--exit-code 1` to fail when potential secrets are detected.
+
+The Trivy scanning steps use `continue-on-error: true` so that both SCA and IaC checks can execute even when the first scan detects vulnerabilities.
+
+A final security gate evaluates the original scan outcomes using `steps.sca.outcome` and `steps.iac.outcome`. If either result is unsuccessful, the job exits with code 1.
+
+This configuration prevents a failed scan from silently passing the security gate while allowing multiple security reports to be generated in a single workflow run.
+
+### 7.5 Conclusion and Next Steps
+
+The security pipeline successfully demonstrated automated detection and build failure enforcement. Semgrep identified insecure application code, Trivy detected dependency vulnerabilities and Dockerfile misconfigurations, and Gitleaks completed secret scanning successfully.
+
+The pipeline currently fails because the starter application contains known security findings. After the team completes remediation, the workflow must be executed again to validate that the identified vulnerabilities have been addressed.
+
+The final goal is to achieve successful security checks without disabling security rules or bypassing the configured gates.
 
 ## 8. Conclusion & Reflection  *(5 pts — clarity)*
 - Residual risks and what you'd harden next.
