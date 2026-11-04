@@ -737,12 +737,78 @@ The final goal is to achieve successful security checks without disabling securi
 
 ## 8. Conclusion & Reflection  *(5 pts — clarity)*
 - Residual risks and what you'd harden next.
+Ans = 8.1 Conclusion and Residual Risks
+
+The NoteVault assessment identified weaknesses in authentication, authorization, password storage, input handling, session security and container configuration. The attack evidence demonstrated how these weaknesses can be chained, including forged administrative sessions and command execution inside the application container.
+
+The supply-chain work documented an SBOM and artifact-signing procedure. The reported CI results also demonstrate detection of insecure code, vulnerable dependencies and container misconfigurations. These controls help identify problems, but they do not replace remediation or prove that an artifact is safe.
+
+Remediation and post-fix verification remain incomplete. Therefore, the application is not yet considered ready for release, and its residual risk has not been reassessed as Low. Additional concerns include session revocation, CSRF protection, login rate limiting, security logging and dependency advisory applicability.
+
+8.2 Further Hardening
+
+The next priority is to implement and test each remediation, record the corresponding commits, and rerun the original attack cases alongside normal application tests. The team should then rebuild the final image, regenerate its SBOM, sign and verify the exact release artifact, and preserve its digest and verification materials.
+
+Further improvements include generating build provenance, pinning build tools and GitHub Actions to immutable references, protecting signing keys, and configuring security checks as required checks before merging. The final report should link evidence to the same source revision and release artifact.
+
 - Lessons learned.
+Ans = This project showed that successful authentication does not guarantee correct authorization. Note access and administrative roles require explicit server-side checks. It also demonstrated the importance of parameterized SQL, safe output rendering, suitable password hashing and avoiding shell execution with user input.
+
+We learned to distinguish scanner findings from demonstrated exploits and to describe impact according to the available evidence. A failed security scan must be investigated to determine whether it detected a policy violation or encountered an operational error.
+
+Finally, we learned that an SBOM describes artifact contents, a signature supports integrity verification relative to a trusted key, and provenance records how an artifact was built. Effective security assurance requires these records together with tested fixes and reproducible evidence.
 
 ---
 
 ## Appendix
 - Tools used, references (OWASP/CWE links), and the team's task split.
+Ans = 
+A. Tools Used
+
+| Tool | Purpose |
+|---|---|
+| Visual Studio Code | Editing application code, configuration files and the report. |
+| Git and GitHub | Version control, team collaboration and storing project evidence. |
+| Docker and Docker Compose | Building and running the NoteVault application. |
+| Browser and curl | Testing application endpoints and reproducing vulnerabilities. |
+| Hashcat | Demonstrating offline recovery of the seeded MD5 passwords. |
+| pip-audit | Identifying known vulnerabilities in Python dependencies. |
+| Semgrep | Static application security testing in CI. |
+| Trivy | Dependency and container configuration scanning, and CycloneDX SBOM generation. |
+| Gitleaks | Scanning Git history for potential secrets. |
+| Cosign | Signing and verifying exported artifacts. |
+| GitHub Actions | Running automated security checks and enforcing security gates. |
+
+B. References
+
+| Reference | Link |
+|---|---|
+| OWASP Top 10:2025 | https://top10.owasp.org/2025/ |
+| CWE-916 — Password Hash with Insufficient Computational Effort | https://cwe.mitre.org/data/definitions/916.html |
+| CWE-759 — Use of a One-Way Hash without a Salt | https://cwe.mitre.org/data/definitions/759.html |
+| CWE-89 — SQL Injection | https://cwe.mitre.org/data/definitions/89.html |
+| CWE-321 — Use of Hard-coded Cryptographic Key | https://cwe.mitre.org/data/definitions/321.html |
+| CWE-78 — OS Command Injection | https://cwe.mitre.org/data/definitions/78.html |
+| CWE-915 — Improperly Controlled Modification of Dynamically-Determined Object Attributes | https://cwe.mitre.org/data/definitions/915.html |
+| CWE-639 — Authorization Bypass Through User-Controlled Key | https://cwe.mitre.org/data/definitions/639.html |
+| CWE-79 — Cross-Site Scripting | https://cwe.mitre.org/data/definitions/79.html |
+| CWE-1395 — Dependency on Vulnerable Third-Party Component | https://cwe.mitre.org/data/definitions/1395.html |
+| CWE-489 — Active Debug Code | https://cwe.mitre.org/data/definitions/489.html |
+| CWE-1004 — Sensitive Cookie Without HttpOnly Flag | https://cwe.mitre.org/data/definitions/1004.html |
+| CWE-614 — Sensitive Cookie in HTTPS Session Without Secure Attribute | https://cwe.mitre.org/data/definitions/614.html |
+| CWE-1275 — Sensitive Cookie with Improper SameSite Attribute | https://cwe.mitre.org/data/definitions/1275.html |
+| CWE-250 — Execution with Unnecessary Privileges | https://cwe.mitre.org/data/definitions/250.html |
+| OWASP Password Storage Cheat Sheet | https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html |
+| CycloneDX | https://cyclonedx.org/ |
+| Sigstore Cosign Documentation | https://docs.sigstore.dev/ |
+| SLSA Specification | https://slsa.dev/spec/ |
+
+C. Team Task Split
+| Team Member | Assigned Sections | Responsibilities |
+|---|---|---|
+| Hathaichanok Yimjan — 6631503045 | Sections 1–4 and 8 | Prepared the executive summary, system scope and DFD, STRIDE threat model, vulnerability findings and supporting evidence, and conclusion and reflection. |
+| Korrakit Lhakdee — 6631503102 | Sections 5–7 | Responsible for implementing and documenting remediation, supply-chain hardening with SBOM and artifact signing, and the GitHub Actions security pipeline. |
+
 
 ---
 
