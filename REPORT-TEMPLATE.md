@@ -644,12 +644,96 @@ This ensures that the submitted supply-chain evidence corresponds to the actual 
 - [Cosign Signature Bundle](starter-app/notevault.sigstore.json)
 
 
-## 7. Security CI Pipeline  *(10 pts)*
-- Link to the GitHub Actions workflow (SAST + SCA + secret scanning).
-- Screenshot of a build **failing** on a HIGH/CRITICAL finding.
-- How the gate is configured (what fails the build).
+## 7. Security CI Pipeline *(10 pts)*
 
----
+### 7.1 GitHub Actions Security Pipeline
+
+An automated security CI pipeline was implemented for the NoteVault application using GitHub Actions. The workflow integrates Semgrep, Trivy, and Gitleaks to identify security vulnerabilities, insecure configurations, and exposed secrets.
+
+**Repository:** [Where-Project](https://github.com/term-where/Where-Project)
+
+**Workflow:** `.github/workflows/security-ci.yml`
+
+**Pull Request:** [Section 7 — Security CI Pipeline](https://github.com/term-where/Where-Project/pull/2)
+
+### 7.2 Security Scanning Results
+
+| Security Tool | Purpose | Result |
+|---|---|---|
+| Semgrep (SAST) | Static application security testing | FAIL — 34 blocking findings |
+| Trivy (SCA) | Dependency vulnerability scanning | FAIL — Dependency vulnerabilities detected |
+| Trivy (IaC) | Dockerfile configuration scanning | FAIL — 2 misconfigurations |
+| Gitleaks | Git history secret scanning | PASS — Scan completed successfully |
+| Security Gate | Enforce security policy | FAIL — Exit Code 1 |
+
+**Semgrep Findings**
+
+Semgrep detected 34 blocking security findings in the application. One confirmed example was the use of `debug=True` in Flask, which can expose sensitive debugging information.
+
+![Semgrep Security Findings](img/sec7/01-semgrep-failed.png)
+
+**Trivy Security Gate**
+
+Trivy completed both SCA and IaC scans. The security gate detected unsuccessful scan outcomes and exited with code 1.
+
+```text
+SCA result: failure
+IaC result: failure
+Security Gate FAILED
+Process completed with exit code 1.
+```
+
+![Trivy Security Gate](img/sec7/02-trivy-gate-failed.png)
+
+**Gitleaks Secret Scanning**
+
+Gitleaks successfully scanned the Git repository using its Docker CLI. The job passed without a reported secret finding.
+
+![Gitleaks Successful Scan](img/sec7/03-gitleaks-pass.png)
+
+### 7.3 Trivy IaC Findings
+
+Trivy identified two Dockerfile misconfigurations:
+
+| Rule ID | Severity | Description |
+|---|---|---|
+| DS-0002 | HIGH | Container does not explicitly use a non-root user |
+| DS-0031 | CRITICAL | Potential exposure of `APP_SECRET` through a Dockerfile environment variable |
+
+**Scan Summary:**
+
+- Total checks: 20
+- Successful checks: 18
+- Failed checks: 2
+- HIGH findings: 1
+- CRITICAL findings: 1
+
+These findings demonstrate that insecure container configurations can be detected automatically before changes are merged into the main branch.
+
+![Trivy IaC Findings](img/sec7/04-trivy-iac-findings.png)
+
+### 7.4 Security Gate Configuration
+
+The GitHub Actions pipeline enforces security checks through command exit codes.
+
+- **Semgrep:** Uses `--error` to fail when blocking security findings are detected.
+- **Trivy SCA:** Uses `exit-code: '1'` for HIGH/CRITICAL dependency vulnerabilities.
+- **Trivy IaC:** Uses `exit-code: '1'` for HIGH/CRITICAL configuration findings.
+- **Gitleaks:** Uses `--exit-code 1` to fail when potential secrets are detected.
+
+The Trivy scanning steps use `continue-on-error: true` so that both SCA and IaC checks can execute even when the first scan detects vulnerabilities.
+
+A final security gate evaluates the original scan outcomes using `steps.sca.outcome` and `steps.iac.outcome`. If either result is unsuccessful, the job exits with code 1.
+
+This configuration prevents a failed scan from silently passing the security gate while allowing multiple security reports to be generated in a single workflow run.
+
+### 7.5 Conclusion and Next Steps
+
+The security pipeline successfully demonstrated automated detection and build failure enforcement. Semgrep identified insecure application code, Trivy detected dependency vulnerabilities and Dockerfile misconfigurations, and Gitleaks completed secret scanning successfully.
+
+The pipeline currently fails because the starter application contains known security findings. After the team completes remediation, the workflow must be executed again to validate that the identified vulnerabilities have been addressed.
+
+The final goal is to achieve successful security checks without disabling security rules or bypassing the configured gates.
 
 ## 8. Conclusion & Reflection  *(5 pts — clarity)*
 - Residual risks and what you'd harden next.
