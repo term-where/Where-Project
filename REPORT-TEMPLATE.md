@@ -436,7 +436,7 @@ The 34 Semgrep findings are scanner results and are not presented as 34 distinct
 
 **Evidence — Failed Workflow Before Remediation**
 
-![alt text](../../where-ptoject/Where-Project-1/img/05-ci-before-fail.jpg)
+![Security CI before remediation](img/sec7/05-ci-before-fail.jpg)
 
 **Semgrep Findings**
 
@@ -492,7 +492,7 @@ Following the remediation changes, the screenshot of PR #3 showed successful res
 
 **Evidence — Successful Checks on PR #3**
 
-![alt text](../../where-ptoject/Where-Project-1/img/06-ci-after-pass.png)
+![Security CI checks passed on PR #3](img/sec7/06-ci-after-pass.png)
 
 The screenshot demonstrates that the tested PR revision passed the configured security checks. It does not establish that a subsequent workflow run on `main` passed, or that every application vulnerability has been resolved.
 
