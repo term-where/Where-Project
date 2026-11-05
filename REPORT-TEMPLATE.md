@@ -319,362 +319,133 @@ Finding F-12 — Application Commands Execute as Root in the Container
 
 ---
 
-## 5. Remediation  *(25 pts)*
+## 5. Remediation *(25 pts)*
 
-Per finding: the fix, **before/after** code, and the commit that implements it.
+### 5.1 Implemented fixes and traceability
 
-### Fix for F-01
-```diff
-- vulnerable line
-+ fixed line
-```
-- **Why this fixes it:** …
-- **Commit:** `<hash>`
-- **Proof the exploit now fails:** (screenshot)
-Ans = Status: proposed implementation, not verified fixes. The examples below describe changes to make against the actual repository. They are not exact git diffs. For each finding, replace the pending commit field with a real hash and attach actual post-fix results. Do not label a proposed test as passed.
+The fixes were implemented on branch `fix/security-remediation` and merged through [PR #4](https://github.com/term-where/Where-Project/pull/4) into `integration/sections-6-7`, then through [PR #3](https://github.com/term-where/Where-Project/pull/3) into `main`. The main remediation commit is [`374718e`](https://github.com/term-where/Where-Project/commit/374718e); GitHub Actions checkout pinning was added in [`536072d`](https://github.com/term-where/Where-Project/commit/536072d). The implementation details below reflect the **current `main` source**, not illustrative proposed code.
 
-Fix for F-01 — Argon2id Password Storage
-Before: seed(), register() and login() compute MD5 digests.
+| Finding | Before remediation | Implemented remediation | Verification / caveat |
+|---|---|---|---|
+| F-01: MD5 password hashing | Fast unsalted MD5 hashes | Werkzeug `generate_password_hash(..., method="scrypt")` at registration and admin bootstrap; `check_password_hash` at login | `test_registration_cannot_grant_admin` checks Scrypt hash; old MD5 accounts require password reset and are not automatically migrated |
+| F-02: Login SQL injection | User input interpolated into SQL | Parameterized lookup `WHERE username = ?`, then password verification | `test_login_sql_injection_rejected` expects 401; before screenshot `img/f02-sqli-login.png` |
+| F-03: JWT forgery | Predictable source-code signing key | Requires runtime `APP_SECRET` of at least 32 characters; accepts only HS256 and requires `sub`, `iat`, `exp`; new tokens expire after one hour | `test_jwt_none_rejected` passes; old-key and expired-token tests not yet included |
+| F-04: Shell command injection | Export format sent into `shell=True` command | Shell removed; `/export` only supports `fmt=txt`, queries current user's notes and returns a text response | `test_export_is_not_shell_execution` tests both rejected and accepted formats; before images `img/f04-cmd-injection 1.png` and `img/f04-cmd-injection 1.1.png` |
+| F-05: Search SQL injection | Search term/owner placed in SQL source | Both values parameterized; LIKE metacharacters escaped | Review `search()` and manually retry original UNION payload; no dedicated automated SQLi regression for `/search` yet |
+| F-06: Role mass assignment | Client-controlled registration role | New accounts always receive server-side `user` role | Role regression test and `/admin` returns 403 for non-admin account |
+| F-07: IDOR | Lookup by note ID without owner validation | Lookup requires `id = ? AND owner = ?`, otherwise returns 404 | `test_idor_rejected` passes with two users |
+| F-08: Stored XSS | Concatenation of stored content into HTML/template source | Fixed `home.html` and `search.html` templates with Jinja HTML escaping | `test_xss_is_escaped_on_home_and_search` passes |
+| F-09: Vulnerable dependencies | Old pins, including Flask 2.0.1 and PyJWT 1.7.1 | Updated `requirements.txt` to Flask 3.1.3, Werkzeug 3.1.9, Jinja2 3.1.6, PyJWT 2.15.1, requests 2.34.2, urllib3 2.8.0, Flask-WTF 1.2.2 | Trivy SCA passes on integrated CI; no full transitive lockfile committed |
+| F-10: Debug mode | Flask debug enabled | `debug=False`; direct Python execution defaults to `127.0.0.1` | Flask development server still used in the container: do not claim production WSGI hardening |
+| F-11: Weak cookie flags | JWT cookie lacked explicit restrictions | `HttpOnly`, `SameSite=Lax`, one-hour max age; `Secure` controlled by `COOKIE_SECURE` | Local HTTP defaults `COOKIE_SECURE=false`; HTTPS/Secure-cookie deployment remains to be demonstrated |
+| F-12: Root container | Process started as root, secret hard-coded in Dockerfile | Dedicated `appuser` via Dockerfile `USER`; `APP_SECRET` supplied by runtime Compose environment | Trivy IaC passed; non-root `id` tested locally; verify final rebuilt image too |
 
-After: add a compatible, scanned version of argon2-cffi to the dependency lock. Keep import hashlib because team_marker() uses SHA-256.
+Additional defensive controls: Flask-WTF CSRF protection and hidden tokens in all POST forms; separate `csrf_session` Flask cookie to avoid colliding with JWT cookie `session`; administrator endpoint does not expose password hashes; `initialize_db()` no longer drops tables; security headers include CSP, `X-Frame-Options` and `X-Content-Type-Options`. A redundant duplicate call to `CSRFProtect(app)` remains and should be cleaned up.
 
-from argon2 import PasswordHasher
-from argon2.exceptions import VerificationError, InvalidHashError
+### 5.2 Representative before / after explanation
 
-ph = PasswordHasher()
+**SQL injection (F-02)**: Rather than joining a user-controlled username into SQL, the corrected code binds it as data:
 
-# In seed(): replace each MD5 seed hash with ph.hash("alicepw")
-# or ph.hash("admin123"), respectively.
-# In register(), after validating password is a nonempty string:
-password_hash = ph.hash(password)
-# Store password_hash with a parameterized INSERT.
-
-# In login(), use the account lookup shown in F-02, then:
-if row:
-    try:
-        ph.verify(row["password"], password or "")
-    except (VerificationError, InvalidHashError):
-        row = None
-
- Why: Argon2id uses a per-password salt and configurable resource cost. Apply the change to every password-writing and verification path. The pasted app's seed() destroys existing tables; use that only for disposable lab data, not as a production migration strategy. Retained MD5 accounts need an explicitly implemented migration or password reset; the snippet does not implement migration.
-
-Commit: [TO COMPLETE]. Verification: correct passwords succeed, wrong passwords fail, identical passwords produce different hashes, and stored hashes begin with $argon2id$. Actual result: [TO COMPLETE].
-
-Fix for F-02 — Parameterized Login and Canonical Identity
-Before: username is interpolated into SQL and copied into the JWT subject.
-
-After: validate inputs, query using a bound parameter, verify the Argon2 hash as described in F-01, and use the database username when issuing the token.
-
+```python
 row = con.execute(
-    "SELECT id, username, password, role FROM users WHERE username = ?",
+    "SELECT password FROM users WHERE username = ?",
     (username,),
 ).fetchone()
-# Perform ph.verify() here. If row is absent or verification fails:
-# return "login failed", 401
-# If verification succeeds, issue JWT with sub=row["username"].
+```
 
-Why: input cannot change SQL syntax, and the identity comes from a verified record. These login changes overlap with F-01; reference the same commit where appropriate rather than presenting incompatible patches.
+**Password storage (F-01)**: New password hashes use adaptive Scrypt rather than fast MD5:
 
-Commit: [TO COMPLETE]. Verification: the original injection returns 401, correct Alice credentials still work, and the token identifies Alice. Actual result: [TO COMPLETE].
+```python
+password_hash = generate_password_hash(password, method="scrypt")
+valid = check_password_hash(stored_hash, password)
+```
 
-Fix for F-03 — Runtime Secret and Expiring JWTs
-Before: a shared source constant signs tokens; no expiration is issued or required.
+**IDOR (F-07)**: The note query checks both identity and resource ownership:
 
-After: provision a random secret outside the repository and fail startup if it is missing. This example assumes migration to a compatible modern PyJWT version.
-
-from datetime import datetime, timedelta, timezone
-
-SECRET = os.environ["NOTEVAULT_JWT_SECRET"]
-
-# After successful login:
-now = datetime.now(timezone.utc)
-tok = jwt.encode(
-    {"sub": row["username"], "iat": now, "exp": now + timedelta(minutes=30)},
-    SECRET,
-    algorithm="HS256",
-)
-
-# In current_user():
-data = jwt.decode(
-    tok, SECRET, algorithms=["HS256"],
-    options={"require": ["sub", "exp"]},
-)
-# Reject non-string/empty sub; confirm the account still exists.
-# Handle jwt.InvalidTokenError by returning None.
-
-Why: the distributed old key no longer authorizes tokens, and a fixed algorithm and required expiry constrain token acceptance. Do not fall back to the old key when configuration is missing. Logout currently only deletes the browser cookie; immediate server-side revocation needs additional design.
-
-Commit: [TO COMPLETE]. Verification: old-key tokens, unsigned tokens, expired tokens, tokens missing exp and invalid subjects are rejected; new valid sessions work. Actual result: [TO COMPLETE].
-
-Fix for F-04 — Remove Shell Execution
-Before: subprocess.run("echo exporting notes as " + fmt, shell=True, ...).
-
-After: for the existing placeholder, return text directly and allow-list fmt. A real note export would also need an owner-scoped query.
-
-fmt = request.args.get("fmt", "txt")
-if fmt not in {"txt", "json"}:
-    return jsonify(error="unsupported format"), 400
-return app.response_class(
-    "exporting notes as " + fmt + "\n",
-    mimetype="text/plain",
-)
-
-Keep the authentication check. Remove subprocess import when unused. Why: no shell interprets request content.
-
-Commit: [TO COMPLETE]. Verification: txt/json work; semicolon payloads return 400 without command output. Actual result: [TO COMPLETE].
-
-Fix for F-05 — Parameterized Search
-rows = con.execute(
-    "SELECT id,title,body FROM notes WHERE owner = ? AND body LIKE ?",
-    (user, "%" + term + "%"),
-).fetchall()
-
-Why: owner and term remain values, not SQL syntax. Also apply F-08 to search rendering.
-
-Commit: [TO COMPLETE]. Verification: the original UNION input does not reveal users/hashes; normal searches still find only the current user's notes. Actual result: [TO COMPLETE].
-
-Fix for F-06 — Server-assigned Registration Role
-Before: role is read from the submitted form or JSON.
-
-After: assign role = "user" without accepting a client override. Use an allow-list of registration fields, validate username/password and enforce unique usernames with appropriate duplicate handling.
-
-Why: users cannot choose an administrative role during public registration. Remove unauthorized admin accounts created during testing.
-
-Commit: [TO COMPLETE]. Verification: register with role=admin and confirm the new account remains user and /admin returns 403. Actual result: [TO COMPLETE].
-
-Fix for F-07 — Enforce Note Ownership
-
-user = current_user()
-if not user:
-    return jsonify(error="auth required"), 401
-con = db()
-r = con.execute(
+```python
+note = con.execute(
     "SELECT id,owner,title,body FROM notes WHERE id = ? AND owner = ?",
     (nid, user),
 ).fetchone()
-con.close()
-return jsonify(dict(r)) if r else (jsonify(error="not found"), 404)
+```
 
-Why: both the object identifier and owner must match the authenticated identity.
+**Command injection (F-04)**: The handler no longer invokes `subprocess` or a shell. It returns a supported TXT export built from owner-scoped note records, rejecting `fmt=txt;id` with HTTP 400.
 
-Commit: [TO COMPLETE]. Verification: Alice's own note returns 200; admin notes and nonexistent IDs return 404; anonymous requests return 401. Actual result: [TO COMPLETE].
+### 5.3 Post-fix verification and limitations
 
-Fix for F-08 — Autoescaped Rendering
-Before: note strings are assembled into HTML and marked safe, or concatenated into template source.
+The team ran seven regression tests in Docker and obtained `Ran 7 tests ... OK`. They cover database persistence, command-injection rejection, IDOR, unsigned JWT rejection, login SQL injection, role enforcement and HTML escaping. These seven tests do **not** exhaustively test all 12 findings. The current `main` branch also has successful GitHub Actions runs after PR integration, covering Semgrep, Trivy SCA + IaC and Gitleaks. Capture a screenshot of a final `main` test run and CI run for submission.
 
-After: replace {{ notes_html|safe }} in PAGE with a fixed loop and pass the row list as notes. Initialize notes=[] for anonymous requests.
-
-<ul>
-{% for note in notes %}
-  <li>#{{ note.id }} <b>{{ note.title }}</b>: {{ note.body }}</li>
-{% endfor %}
-</ul>
-
-# Home rendering: pass structured data, not an HTML string.
-return render_template_string(
-    PAGE, user=user, is_admin=bool(user and role_of(user) == "admin"),
-    notes=rows,
-)
-
-# Search: use a fixed template too; never join note values into its source.
-return render_template_string(
-    '<a href="/">back</a><ul>{% for n in notes %}'
-    '<li>{{ n.title }}: {{ n.body }}</li>{% endfor %}</ul>',
-    notes=rows,
-)
-
-The home example assumes rows is initialized for all paths. Why: autoescaping treats note values as text rather than executable HTML or template source.
-
-Commit: [TO COMPLETE]. Verification: the saved XSS payload displays as text without alert; both home and search remain functional. Actual result: [TO COMPLETE].
-
-Fix for F-09 — Verified Dependency Updates
-Proposed action: scan the original resolved environment, record advisories, choose compatible patched versions, create a reproducible lock and scan the rebuilt environment/image. Do not invent replacement version numbers or report a clean scan without results.
-
-Commit: [TO COMPLETE]. Before/after package/advisory table and actual scan output: [TO COMPLETE]. Confirm modern PyJWT, Flask JSON parsing and Argon2 integration work together. Prefer request.get_json(silent=True) or explicit content-type handling for mixed form/JSON routes when adapting to updated Flask behavior.
-
-Fix for F-10 — Disable Debug and Use a Production Server
-Before: Flask's development server starts with debug=True.
-
-Proposed action: disable debug, use a production WSGI server in the container, and explicitly initialize the database for that entry point. Importing app with a WSGI server will not execute the current main seed() block; blindly changing the command can leave the database uninitialized. Keep destructive demo seeding separate from normal startup.
-
-Commit: [TO COMPLETE]. Exact Docker command/WSGI dependency and database initialization change: [TO COMPLETE after Dockerfile review]. Verification: no active debugger, generic error responses and a working initialized app. Actual result: [TO COMPLETE].
-
-Fix for F-11 — Cookie Attributes and HTTPS
-
-resp.set_cookie(
-    "session", tok,
-    httponly=True, secure=True, samesite="Lax", path="/",
-)
-
-Why: HttpOnly prevents ordinary script access to the cookie; Secure restricts transmission to HTTPS; an explicit SameSite policy reduces some cross-site request exposure. These do not replace XSS fixes or CSRF protection. Configure HTTPS for deployed verification; if local HTTP needs an exception, keep it explicit and limited to development.
-
-Commit: [TO COMPLETE]. Verification: inspect the actual Set-Cookie header and confirm login/logout work in the target HTTPS environment. Actual result: [TO COMPLETE].
-
-Fix for F-12 — Non-root Container Runtime
-Proposed action: create a dedicated application user, switch USER before the runtime command and give it write access only to the intended SQLite directory. Check Compose user settings and mounted-volume ownership. Do not add a Dockerfile diff before reading the actual file. Keep signing keys outside source/image layers.
-
-Why: a compromised process has fewer privileges inside the container. This supplements, rather than fixes, command injection.
-
-Commit: [TO COMPLETE]. Exact Dockerfile/Compose changes: [TO COMPLETE]. Verification: runtime id reports a nonzero UID, database writes still work and the F-04 injection remains blocked. Actual result: [TO COMPLETE].
-
-Remediation evidence checklist
-
-| Required item | Current status |
-|---|---|
-| Actual corrected source and dependency files | Not supplied |
-| Exact git diff against the repository | Pending implementation |
-| Commit hashes referring to finding IDs | Not supplied |
-| Post-fix exploit retests | Not supplied |
-| Normal-function regression checks | Not supplied |
-| Original and post-update SCA output | Not supplied |
-| Dockerfile and Compose review | Not supplied |
-
-References for checking the mapping and implementation:
-- OWASP Top 10:2025: https://top10.owasp.org/2025/
-- CWE definitions: https://cwe.mitre.org/data/index.html
-- PyJWT documentation: https://pyjwt.readthedocs.io/
-- Password storage guidance: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+Remaining work includes negative tests for expired/old-key JWTs and search SQL injection, HTTPS with `COOKIE_SECURE=true`, production WSGI hosting, persistent storage, server-side session revocation and login rate limiting. The intended outcome is a hardened **local training build**, not a claim of production readiness.
 
 ---
 
 ## 6. Supply-Chain Hardening *(15 pts)*
 
-### 6.1 Software Bill of Materials (SBOM)
+### 6.1 CycloneDX SBOM
 
-A Software Bill of Materials (SBOM) was generated for the NoteVault Docker image using Trivy. The SBOM follows the CycloneDX 1.7 specification and contains **483 components**, including operating system packages and application dependencies.
+An SBOM was generated using Trivy from an earlier `starter-app-notevault:latest` image and saved as [`starter-app/sbom.json`](starter-app/sbom.json). The original recorded verification reported CycloneDX 1.7 and 483 components. The evidence screenshot is `img/sec6/01-sbom-verification.png`. An SBOM inventories packages but is not proof that the artifact is vulnerability-free.
 
-- **Tool:** Trivy v0.74.0
-- **Target Image:** `starter-app-notevault:latest`
-- **Format:** CycloneDX 1.7
-- **Output:** `starter-app/sbom.json`
-- **Total Components:** 483
+**Important revision:** The committed SBOM predates the final remediation. Its component count and contents must not be represented as the verified inventory of the final `main` image.
 
-**Command:**
+### 6.2 Cosign signing and verification
 
-```bash
-docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$PWD:/output" \
-  aquasec/trivy:latest image \
-  --format cyclonedx \
-  --output /output/sbom.json \
-  starter-app-notevault:latest
-```
+The team used Cosign `sign-blob` to sign an exported image TAR and `verify-blob` to verify it against [`starter-app/cosign.pub`](starter-app/cosign.pub) and [`starter-app/notevault.sigstore.json`](starter-app/notevault.sigstore.json). The original verification screenshot is `img/sec6/02-cosign-verified.png` and records `Verified OK` and exit code 0. The private key is intentionally excluded from Git.
 
-**Verification Result:**
+Signing a **TAR blob** is not equivalent to registry-based signing of an image digest. Signature verification supports integrity relative to a trusted key; it does not certify the security of the image contents.
 
-```text
-Format: CycloneDX
-Version: 1.7
-Components: 483
-```
-**Evidence — SBOM Verification**
-![SBOM Verification](img/sec6/01-sbom-verification.png)
+### 6.3 SLSA self-assessment
 
-The generated SBOM provides visibility into the dependencies included in the Docker image. This information supports dependency management, vulnerability tracking, and software supply-chain risk assessment.
+This project does not yet demonstrate trusted build provenance and therefore makes **no claim to SLSA Build Level 1 or higher**. An SBOM, a verified blob signature and passing security scanners are valuable controls but do not, by themselves, provide reproducible or independently attested build provenance.
 
-**Evidence:** `starter-app/sbom.json` and a screenshot showing the SBOM verification results.
+### 6.4 Final artifact evidence still needed
 
-### 6.2 Artifact Signing and Verification with Cosign
+Because the remediation is now merged, the final-release procedure should be carried out **on the new image**: (1) rebuild from final `main`, (2) create a fresh CycloneDX SBOM, (3) export and sign the exact new artifact, (4) verify its signature, (5) record its SHA-256 digest, tool versions and verification logs, then (6) update this report and artifacts accordingly. Do not claim completion until those outputs actually exist.
 
-The NoteVault Docker image was exported as a TAR archive and digitally signed using Cosign v3.1.4. The signature was verified using the corresponding public key to confirm that the artifact had not been modified after signing.
+**Existing evidence:** [`sbom.json`](starter-app/sbom.json), [`cosign.pub`](starter-app/cosign.pub), [`notevault.sigstore.json`](starter-app/notevault.sigstore.json), and two Section 6 screenshots.
 
-**Step 1 — Export Docker Image**
-
-```bash
-docker save -o notevault-image.tar starter-app-notevault:latest
-```
-
-**Step 2 — Sign Artifact**
-
-```bash
-cosign sign-blob \
-  --key cosign.key \
-  --bundle notevault.sigstore.json \
-  notevault-image.tar
-```
-
-**Step 3 — Verify Signature**
-
-```bash
-cosign verify-blob \
-  --key cosign.pub \
-  --bundle notevault.sigstore.json \
-  notevault-image.tar
-```
-
-**Verification Result:**
-
-```text
-Verified OK
-Exit Code: 0
-```
-![Cosign Verified OK](img/sec6/02-cosign-verified.png)
-
-The successful verification confirms the integrity and authenticity of the archive relative to the signing key used. The private key (`cosign.key`) is excluded from Git to prevent unauthorized use.
-
-**Evidence:**
-- `starter-app/cosign.pub` — Public verification key
-- `starter-app/notevault.sigstore.json` — Signature bundle
-- Screenshot showing `Verified OK` and exit code 0
-
-**Limitation:** This implementation signs an exported Docker image archive using `cosign sign-blob`. It does not yet sign a container image digest stored in a registry. Registry-based image signing should be implemented for the final release if required by the project's release process.
-
-### 6.3 SLSA Self-Assessment
-
-The current NoteVault project uses a local Docker build process and manually signs the exported image archive. Although we have generated an SBOM and verified its digital signature, the build process does not yet generate trusted, verifiable provenance.
-
-Therefore, the project does not currently claim SLSA Build Level 1 or higher.
-
-To improve software supply-chain security, the team plans to automate image builds through GitHub Actions, generate provenance attestations, pin dependencies and GitHub Actions to immutable references, and sign the final release artifact.
-
-This would improve build traceability, integrity verification, and protection against software supply-chain attacks.
-
-### 6.4 Final Release Considerations
-
-The current SBOM and signature were generated from the starter application image before all security remediations were completed.
-
-After the development team finishes fixing the identified vulnerabilities, the final Docker image must be rebuilt. A new CycloneDX SBOM must then be generated, and the final artifact must be signed and verified again.
-
-This ensures that the submitted supply-chain evidence corresponds to the actual remediated release.
-**Generated Artifacts:**
-
-- [CycloneDX SBOM](starter-app/sbom.json)
-- [Cosign Public Key](starter-app/cosign.pub)
-- [Cosign Signature Bundle](starter-app/notevault.sigstore.json)
-
+---
 
 ## 7. Security CI Pipeline *(10 pts)*
 
+
 ### 7.1 GitHub Actions Security Pipeline
 
-An automated security CI pipeline was implemented for the NoteVault application using GitHub Actions. The workflow integrates Semgrep, Trivy, and Gitleaks to identify security vulnerabilities, insecure configurations, and exposed secrets.
+An automated security pipeline was implemented for NoteVault using GitHub Actions. It includes Semgrep for static application security testing, Trivy for dependency and configuration scanning, and Gitleaks for Git history secret scanning.
 
-**Repository:** [Where-Project](https://github.com/term-where/Where-Project)
+**Repository:** https://github.com/term-where/Where-Project
 
 **Workflow:** `.github/workflows/security-ci.yml`
 
-**Pull Request:** [Section 7 — Security CI Pipeline](https://github.com/term-where/Where-Project/pull/2)
+**Integration Pull Request:** https://github.com/term-where/Where-Project/pull/3
 
-### 7.2 Security Scanning Results
+**Remediation Pull Request:** https://github.com/term-where/Where-Project/pull/4
 
-| Security Tool | Purpose | Result |
-|---|---|---|
-| Semgrep (SAST) | Static application security testing | FAIL — 34 blocking findings |
-| Trivy (SCA) | Dependency vulnerability scanning | FAIL — Dependency vulnerabilities detected |
-| Trivy (IaC) | Dockerfile configuration scanning | FAIL — 2 misconfigurations |
-| Gitleaks | Git history secret scanning | PASS — Scan completed successfully |
-| Security Gate | Enforce security policy | FAIL — Exit Code 1 |
+### 7.2 Results Before Remediation
+
+The initial security scans identified application security findings, vulnerable dependencies and insecure Dockerfile configurations.
+
+| Security Check | Result Before Remediation |
+|---|---|
+| Semgrep — SAST | FAIL — 34 blocking findings reported |
+| Trivy — SCA | FAIL — Dependency vulnerabilities detected |
+| Trivy — IaC | FAIL — Two Dockerfile misconfigurations detected |
+| Gitleaks — Secrets | PASS — No secret finding reported |
+| Trivy Security Gate | FAIL — Exit code 1 |
+
+The 34 Semgrep findings are scanner results and are not presented as 34 distinct, independently confirmed vulnerabilities.
+
+**Evidence — Failed Workflow Before Remediation**
+
+![alt text](../../where-ptoject/Where-Project-1/img/05-ci-before-fail.jpg)
 
 **Semgrep Findings**
 
-Semgrep detected 34 blocking security findings in the application. One confirmed example was the use of `debug=True` in Flask, which can expose sensitive debugging information.
+Semgrep reported insecure application code, including Flask debug mode being enabled with `debug=True`.
 
-![Semgrep Security Findings](img/sec7/01-semgrep-failed.png)
 
 **Trivy Security Gate**
 
-Trivy completed both SCA and IaC scans. The security gate detected unsuccessful scan outcomes and exited with code 1.
+The Trivy security gate reported unsuccessful SCA and IaC outcomes and exited with code 1.
 
 ```text
 SCA result: failure
@@ -683,24 +454,22 @@ Security Gate FAILED
 Process completed with exit code 1.
 ```
 
-![Trivy Security Gate](img/sec7/02-trivy-gate-failed.png)
 
 **Gitleaks Secret Scanning**
 
-Gitleaks successfully scanned the Git repository using its Docker CLI. The job passed without a reported secret finding.
+Gitleaks completed successfully without a reported secret finding. This result applies to the scanner configuration and Git history examined; it does not guarantee that every sensitive value has been identified.
 
-![Gitleaks Successful Scan](img/sec7/03-gitleaks-pass.png)
 
-### 7.3 Trivy IaC Findings
+### 7.3 Dockerfile Configuration Findings
 
-Trivy identified two Dockerfile misconfigurations:
+The initial Trivy IaC scan identified two Dockerfile misconfigurations.
 
-| Rule ID | Severity | Description |
+| Rule ID | Severity | Finding |
 |---|---|---|
-| DS-0002 | HIGH | Container does not explicitly use a non-root user |
-| DS-0031 | CRITICAL | Potential exposure of `APP_SECRET` through a Dockerfile environment variable |
+| DS-0002 | HIGH | The container did not explicitly use a non-root user. |
+| DS-0031 | CRITICAL | `APP_SECRET` was defined in a Dockerfile environment variable, creating a potential secret-exposure risk. |
 
-**Scan Summary:**
+**Initial IaC Scan Summary:**
 
 - Total checks: 20
 - Successful checks: 18
@@ -708,55 +477,78 @@ Trivy identified two Dockerfile misconfigurations:
 - HIGH findings: 1
 - CRITICAL findings: 1
 
-These findings demonstrate that insecure container configurations can be detected automatically before changes are merged into the main branch.
 
-![Trivy IaC Findings](img/sec7/04-trivy-iac-findings.png)
+The corresponding remediation introduces a non-root container user and removes the baked-in application secret. Secrets must be supplied through runtime configuration.
 
-### 7.4 Security Gate Configuration
+### 7.4 Results After Remediation
 
-The GitHub Actions pipeline enforces security checks through command exit codes.
+Following the remediation changes, the screenshot of PR #3 showed successful results for all three security jobs.
 
-- **Semgrep:** Uses `--error` to fail when blocking security findings are detected.
-- **Trivy SCA:** Uses `exit-code: '1'` for HIGH/CRITICAL dependency vulnerabilities.
-- **Trivy IaC:** Uses `exit-code: '1'` for HIGH/CRITICAL configuration findings.
-- **Gitleaks:** Uses `--exit-code 1` to fail when potential secrets are detected.
+| Security Job | Result on PR #3 |
+|---|---|
+| SAST — Semgrep | PASS |
+| SCA + IaC — Trivy | PASS |
+| Secrets — Gitleaks | PASS |
 
-The Trivy scanning steps use `continue-on-error: true` so that both SCA and IaC checks can execute even when the first scan detects vulnerabilities.
+**Evidence — Successful Checks on PR #3**
 
-A final security gate evaluates the original scan outcomes using `steps.sca.outcome` and `steps.iac.outcome`. If either result is unsuccessful, the job exits with code 1.
+![alt text](../../where-ptoject/Where-Project-1/img/06-ci-after-pass.png)
 
-This configuration prevents a failed scan from silently passing the security gate while allowing multiple security reports to be generated in a single workflow run.
+The screenshot demonstrates that the tested PR revision passed the configured security checks. It does not establish that a subsequent workflow run on `main` passed, or that every application vulnerability has been resolved.
 
-### 7.5 Conclusion and Next Steps
+The Semgrep configuration excludes a Django-specific CSRF rule that is not applicable to this Flask application. This exclusion must remain documented and must not be interpreted as evidence that Flask CSRF protection has been tested.
 
-The security pipeline successfully demonstrated automated detection and build failure enforcement. Semgrep identified insecure application code, Trivy detected dependency vulnerabilities and Dockerfile misconfigurations, and Gitleaks completed secret scanning successfully.
+Application regression tests and attack re-tests are documented separately in Section 5.
 
-The pipeline currently fails because the starter application contains known security findings. After the team completes remediation, the workflow must be executed again to validate that the identified vulnerabilities have been addressed.
+### 7.5 Security Gate Configuration
 
-The final goal is to achieve successful security checks without disabling security rules or bypassing the configured gates.
+The workflow uses command exit codes to report security failures.
 
-## 8. Conclusion & Reflection  *(5 pts — clarity)*
-- Residual risks and what you'd harden next.
-Ans = 8.1 Conclusion and Residual Risks
+| Tool | Failure Configuration |
+|---|---|
+| Semgrep | `--error` reports failure when blocking findings are detected. |
+| Trivy SCA | `exit-code: '1'` reports failure for findings meeting the configured HIGH/CRITICAL threshold. |
+| Trivy IaC | `exit-code: '1'` reports failure for findings meeting the configured HIGH/CRITICAL threshold. |
+| Gitleaks | `--exit-code 1` reports failure when potential secrets are detected. |
 
-The NoteVault assessment identified weaknesses in authentication, authorization, password storage, input handling, session security and container configuration. The attack evidence demonstrated how these weaknesses can be chained, including forged administrative sessions and command execution inside the application container.
+The Trivy scanning steps use `continue-on-error: true` so both SCA and IaC scans can run even when one fails.
 
-The supply-chain work documented an SBOM and artifact-signing procedure. The reported CI results also demonstrate detection of insecure code, vulnerable dependencies and container misconfigurations. These controls help identify problems, but they do not replace remediation or prove that an artifact is safe.
+A final gate checks `steps.sca.outcome` and `steps.iac.outcome`. If either outcome is not `success`, the gate exits with code 1. This also prevents an unsuccessful scan caused by an operational error from being treated as a passing result.
 
-Remediation and post-fix verification remain incomplete. Therefore, the application is not yet considered ready for release, and its residual risk has not been reassessed as Low. Additional concerns include session revocation, CSRF protection, login rate limiting, security logging and dependency advisory applicability.
+A failed workflow marks the security checks as unsuccessful. Preventing a merge additionally requires repository rules or branch protection that make these checks mandatory.
 
-8.2 Further Hardening
+### 7.6 Conclusion and Next Steps
 
-The next priority is to implement and test each remediation, record the corresponding commits, and rerun the original attack cases alongside normal application tests. The team should then rebuild the final image, regenerate its SBOM, sign and verify the exact release artifact, and preserve its digest and verification materials.
+The evidence shows an earlier failing workflow and later successful security checks on PR #3. This demonstrates detection of security issues and successful execution of the configured checks after changes were made.
 
-Further improvements include generating build provenance, pinning build tools and GitHub Actions to immutable references, protecting signing keys, and configuring security checks as required checks before merging. The final report should link evidence to the same source revision and release artifact.
+Passing CI is one part of verification. The team must also retain attack re-test results, confirm normal application functionality, and review the scope and configuration of each scanner.
 
-- Lessons learned.
-Ans = This project showed that successful authentication does not guarantee correct authorization. Note access and administrative roles require explicit server-side checks. It also demonstrated the importance of parameterized SQL, safe output rendering, suitable password hashing and avoiding shell execution with user input.
+Before the final release, the team should verify the final source revision, rebuild the image, regenerate its SBOM, and sign and verify the final artifact. Workflow run links and tested commit IDs should be retained with the evidence.
+---
 
-We learned to distinguish scanner findings from demonstrated exploits and to describe impact according to the available evidence. A failed security scan must be investigated to determine whether it detected a policy violation or encountered an operational error.
+## 8. Conclusion & Reflection *(5 pts — clarity)*
 
-Finally, we learned that an SBOM describes artifact contents, a signature supports integrity verification relative to a trusted key, and provenance records how an artifact was built. Effective security assurance requires these records together with tested fixes and reproducible evidence.
+### 8.1 Conclusion and residual risks
+
+NoteVault's intentionally vulnerable version exposed weaknesses in authentication, access control, SQL query construction, shell execution, stored HTML content, password hashing, dependency maintenance and Docker configuration. The pre-fix evidence includes administrative JWT forgery and command execution **inside the lab container**; host compromise was not established.
+
+The merged code now uses parameterized queries, Scrypt password hashes, restricted JWT validation and expiration, note ownership checks, autoescaped templates, shell-free export, non-root container execution, runtime secrets and CSRF protection. Seven local regression tests passed, and the post-merge GitHub Actions checks passed for Semgrep, Trivy and Gitleaks.
+
+Residual risk remains. The current application uses the Flask development server, its local HTTP configuration does not set `Secure` on cookies by default, its JWT logout does not provide immediate server-side revocation, it lacks demonstrated login rate limiting, and the container configuration has no persistent SQLite volume. The committed SBOM/signature files are from a previous image and have not been proven to match the final remediated build. Accordingly, this is a **hardened authorized training implementation**, not a production-ready deployment.
+
+### 8.2 Next improvements
+
+1. Add a `.dockerignore`, inspect the final image for unintended files, and remove the duplicate CSRF initialization.
+2. Deploy with HTTPS, secure cookie settings, production WSGI hosting, secure secrets management and persistent database storage.
+3. Extend negative tests for search SQL injection, invalid/expired JWTs, CSRF, cookie attributes and account-lockout/rate-limit behavior.
+4. Build the **final** image again, generate its SBOM, sign and verify that exact artifact, record its digest and consider provenance attestations.
+5. Capture final screenshots tied to the same commit and configure required security checks for future pull requests.
+
+### 8.3 Lessons learned
+
+Authentication does not replace per-object authorization. Prepared SQL statements isolate user data from SQL syntax. Autoescaped templates prevent note content from being interpreted as executable HTML. Eliminating shell execution prevents command injection at its source. Adaptive password hashing is necessary for protecting stored credentials.
+
+We also learned to differentiate **demonstrated exploits**, **scanner findings**, **implemented fixes** and **remaining limitations**. Scans can pass while untested risks remain, and an SBOM or signature must correspond to the specific artifact being delivered. Reproducible links between evidence, commits, tests, CI results and the release artifact make the team's security claims auditable.
 
 ---
 
