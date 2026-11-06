@@ -7,10 +7,11 @@
 
 | Field | Value |
 |---|---|
-| Team name | Where|
+| Team name | Where |
 | Members (name + ID) | Hathaichanok Yimjan (6631503045), Korrakit Lhakdee (6631503102) |
-| Target application |NoteVault (Python/Flask, starter-app)|
-| Repository URL |https://github.com/term-where/Where-Project.git , |
+| Target application | NoteVault (Python/Flask, starter-app) |
+| Repository URL | https://github.com/term-where/Where-Project |
+| Demo video | [Watch the demonstration](https://drive.google.com/file/d/1e7s6jX2rgrtjxtH9-JvpP65ucVXdNeup/view?usp=sharing) |
 | Date | 6 November 2026 |
 
 ## AI-tool usage disclosure
