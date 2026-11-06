@@ -26,30 +26,32 @@
 
 ## 1. Executive Summary
 *(½ page) What the app is, how many findings by severity, and the overall risk before vs. after your fixes.*
-Ans = NoteVault is a small note-sharing web application built with Flask and SQLite. Users can register, log in, create notes and search note content. A JSON endpoint retrieves notes by ID, and an admin endpoint lists accounts. Sessions use a JWT cookie. The current export endpoint runs an echo command rather than exporting stored notes.
 
-We reviewed the source and tested the local team build. The supplied evidence includes the marker team=Where marker=4d820f632b4e. It demonstrates password-check bypass at login, JWT forgery using a hard-coded signing secret, OS command injection, SQL injection in search, registration role tampering, unauthorized note access and stored JavaScript execution. The cookie response also lacks explicit security attributes.
+Ans = NoteVault is a note-sharing web application built with Python Flask and SQLite. Users can register, log in, create notes and search note content. The application also provides a JSON note endpoint and an administrative account-listing endpoint. In the vulnerable baseline, sessions use JWT cookies and the placeholder export feature invokes a shell command.
 
-The assessment tracks 12 finding IDs. F-09 was assessed using pip-audit 2.10.1 against requirements.txt. The tool reported 81 vulnerability entries across seven packages. The scan output includes duplicate advisory IDs, so this total is not presented as 81 unique vulnerabilities. Severity and applicability to NoteVault remain under review.F-12 is limited here to root execution; a separate claim about secrets baked into an image requires Dockerfile/image inspection. Severity is a qualitative team assessment, not a calculated CVSS score.
+The assessment identified 12 findings through source review and testing of the local team build. Evidence includes password-check bypass, administrative JWT forgery, command injection, search SQL injection, registration role tampering, unauthorized note access and stored JavaScript execution. The disclosed admin notes include the team marker `team=Where marker=4d820f632b4e`.
 
 | Provisional severity | Count | Finding IDs |
 |---|---:|---|
 | Critical | 2 | F-03, F-04 |
 | High | 5 | F-01, F-05, F-06, F-07, F-08 |
 | Medium | 4 | F-02, F-10, F-11, F-12 |
-| Pending severity assessment | 1 | F-09 — dependency scan completed|
+| Pending advisory severity assessment | 1 | F-09 |
 
-Before remediation, overall risk is assessed as Critical because a forged admin JWT can be chained with command injection to execute commands as root inside the application container. This does not demonstrate host compromise or a container escape. The login SQLi screenshot demonstrates bypass of password verification, but does not establish admin impersonation because the JWT subject is taken from the submitted username.
+For F-09, pip-audit 2.10.1 reported 81 vulnerability entries across seven packages. Duplicate advisory IDs appear in the output, so this is not presented as 81 unique vulnerabilities. Advisory severity and applicability require further assessment.
 
-Remediation is in progress. The proposed changes address password hashing, query parameterization, token security, authorization, output escaping, dependency maintenance and runtime configuration. Residual risk after remediation has not yet been verified.
+Before remediation, overall risk was assessed as Critical because administrative JWT forgery could be chained with command injection to execute commands as root inside the application container. Host compromise or container escape was not demonstrated.
 
+Reported remediation changes address password hashing, SQL construction, JWT validation, authorization, HTML rendering, dependencies and container configuration. The supplied screenshot shows successful Semgrep, Trivy and Gitleaks checks on PR #3. It does not establish successful post-merge checks on main or verification of every fix. Residual risk has not been reassessed as Low, and production readiness has not been established.
 
 ---
 
 ## 2. System Scope & Function
 - What the application does; in-scope components and endpoints.
 - **Data-Flow Diagram (DFD):** processes, data stores, external entities, **trust boundaries** (insert image).
+
 Ans = Application components
+This section describes the vulnerable baseline used for the threat model and pre-fix demonstrations. The shell subprocess, GET logout route and placeholder export behavior refer to that baseline. Reported remediation changes are described separately in Section 5.
 
 | Component | Function |
 |---|---|
@@ -58,7 +60,7 @@ Ans = Application components
 | SQLite users table | Stores account names, password hashes and roles. |
 | SQLite notes table | Stores note IDs, owners, titles and bodies. |
 | OS subprocess | Executes the export command in the vulnerable implementation. |
-| Build/runtime configuration | requirements.txt, Dockerfile and docker-compose.yml; configuration files beyond the pasted source require inspection. |
+| Build/runtime configuration | `requirements.txt`, `Dockerfile` and `docker-compose.yml` define dependencies, image construction and runtime settings. |
 
 In-scope routes
 | Route | Purpose |
@@ -68,7 +70,7 @@ In-scope routes
 | POST /login | Credential verification and JWT cookie issuance. |
 | GET /logout | Cookie deletion. |
 | POST /notes | Create a note for the signed-in identity. |
-| GET /api/notes/<id> | Retrieve a note by ID. |
+| GET `/api/notes/<id>` | Retrieve a note by ID. |
 | GET /search | Search note bodies. |
 | GET /admin | List accounts for an admin identity. |
 | GET /export | Run a placeholder export command. |
@@ -96,7 +98,7 @@ The database path is /tmp/notevault.db. The Docker host OS and course submission
 |---|---|---|---|---|---|---|---|
 | Login — `/login` (B1→B2) | ✓ | ✓ | — | — | — | — | **F-02: SQL injection bypasses password verification.** Use a parameterized account lookup, verify the password hash, and issue the JWT for the verified database username. |
 | Session cookie — JWT (B1) | ✓ | ✓ | — | ✓ | — | ✓ | **F-03: A hard-coded signing secret enables admin token forgery.** Use a strong runtime secret, allow only HS256, and require token expiration. |
-| Password storage — `users` (B2) | — | — | — | ✓ | — | — | **F-01: Unsalted MD5 enables fast offline password guessing after hash disclosure.** Replace MD5 with Argon2id using a unique salt for each password. |
+| Password storage — `users` (B2) | — | — | — | ✓ | — | — | **F-01: Unsalted MD5 enables fast offline password guessing after hash disclosure.** Replace MD5 with salted, adaptive password hashing. The reported implementation uses Werkzeug Scrypt. |
 | Registration — `/register` (B1→B2) | — | ✓ | — | — | — | ✓ | **F-06: Client-supplied roles allow registration as admin.** Assign the `user` role server-side and reject unauthorized role changes. |
 | Note retrieval — `/api/notes/<id>` (B1→B2) | — | — | — | ✓ | — | — | **F-07: Missing ownership checks expose other users’ notes.** Retrieve notes using both the note ID and authenticated owner. |
 | Note rendering — `/` and `/search` (B1) | ✓ | ✓ | — | ✓ | — | — | **F-08: Stored note content executes JavaScript in the browser.** Use fixed, autoescaped templates and avoid marking user content as safe. Cross-user exposure requires further verification. |
@@ -114,14 +116,23 @@ STRIDE: S = Spoofing, T = Tampering, R = Repudiation, I = Information Disclosure
 
 *Then rank the top 5 risks by likelihood × impact.*
 
-| Rank | Risk | Finding | Likelihood | Impact | Overall risk |
-|---|---|---|---|---|---|
-| 1 | OS command injection inside the container | F-04 | High | Critical | Critical |
-| 2 | Forged admin JWT using the hard-coded secret | F-03 | High | Critical | Critical |
-| 3 | Registration as admin through role tampering | F-06 | High | High | High |
-| 4 | Search SQL injection exposing account hashes | F-05 | High | High | High |
-| 5 | Unauthorized access to other users’ notes | F-07 | High | High | High |
+The following scores assess the vulnerable baseline using a qualitative 1–5 scale.
 
+Likelihood: 1 = unlikely, 2 = low, 3 = possible, 4 = likely, and 5 = readily repeatable with minimal prerequisites.
+
+Impact: 1 = limited, 2 = minor, 3 = significant unauthorized access, 4 = broad sensitive-data disclosure, and 5 = application-wide compromise or arbitrary command execution.
+
+Risk score = likelihood × impact. Scores of 1–4 are Low, 5–9 Medium, 10–16 High, and 17–25 Critical. These are team assessment scores, not CVSS scores.
+
+| Rank | Risk | Finding | Likelihood | Impact | Score | Rating |
+|---|---|---|---:|---:|---:|---|
+| 1 | OS command injection inside the application container | F-04 | 5 | 5 | 25 | Critical |
+| 2 | Administrative JWT forgery using the hard-coded key | F-03 | 5 | 5 | 25 | Critical |
+| 3 | Search SQL injection exposing account hashes | F-05 | 4 | 4 | 16 | High |
+| 4 | Administrative registration through role tampering | F-06 | 5 | 3 | 15 | High |
+| 5 | Unauthorized access to other users' notes | F-07 | 5 | 3 | 15 | High |
+
+Ties are ordered by the demonstrated attack chain and practical exposure. F-04 requires an authenticated session, which can be obtained normally or through the demonstrated authentication weaknesses.
 ---
 
 ## 4. Vulnerability Findings  *(25 pts)*
@@ -139,7 +150,7 @@ One block per finding (copy as needed):
 | Reproduction | Inspect seed(), register() and login() in app.py. Confirm that passwords are hashed using hashlib.md5(...).hexdigest() without a per-password salt. |
 | Observed result | Hashcat recovered both NoteVault seed passwords, alicepw and admin123. The output shows MD5 mode 0, Status: Cracked, and Recovered: 2/2 (100%). |
 | Impact | Disclosure of hashes enables fast offline guessing, especially for weak or reused passwords. |
-| Mitigation | Use Argon2id. Recreate only disposable lab seed data; for retained accounts use a documented migration/reset process. |
+| Mitigation | Replace MD5 with salted, adaptive password hashing. The reported remediation uses Werkzeug Scrypt. Retained MD5 accounts require a documented password-reset or migration process. |
 | Evidence | Hashcat screenshot showing both recovered hash–password pairs and team member ID 6631503102. |
 
 ![alt text](img/week03-task5-hashcat-cracked.png)
@@ -278,28 +289,31 @@ Finding F-10 — Debug Mode Enabled
 | Field | Value |
 |---|---|
 | CWE / OWASP 2025 | CWE-489 / A02 Security Misconfiguration |
-| Severity | Medium, provisional. |
-| Location | app.run(..., debug=True) |
-| Reproduction | Inspect app.py and the startup log. |
-| Observed result | The source enables debug mode; the supplied startup screenshot reports that the debugger is active. |
-| Impact | Sensitive error details and unnecessary debugger exposure. Debug-console command execution has not been demonstrated. |
-| Mitigation | Disable debug and deploy behind a production WSGI server. |
+| Severity | Medium, provisional |
+| Location | Vulnerable `app.py`: `app.run(..., debug=True)` |
+| Root cause | Development debug mode is enabled in the application entry point. |
+| Reproduction | Inspect the vulnerable `app.py` and confirm that `app.run()` enables `debug=True`. |
+| Observed result | The supplied vulnerable source explicitly enables Flask debug mode. |
+| Impact | Debug mode creates unnecessary diagnostic exposure. Debug-console exploitation has not been demonstrated. |
+| Mitigation | Disable debug mode and deploy through a production WSGI server. |
+| Evidence | Source-code inspection of the vulnerable `app.py`. A startup-log screenshot is not attached. |
 
-Evidence: [TO COMPLETE: save the supplied startup screenshot under an actual filename and insert its image link here.]
+**Evidence:** Source-code inspection of the vulnerable `app.py`. A startup-log screenshot is not included in this report.
 
 Finding F-11 — Missing Session Cookie Security Attributes
 
 | Field | Value |
 |---|---|
-| CWE / OWASP 2025 | CWE-1004 (HttpOnly), CWE-614 (Secure), CWE-1275 (SameSite) / A02 Security Misconfiguration |
+| CWE / OWASP 2025 | CWE-1004, CWE-614, CWE-1275 / A02 Security Misconfiguration |
 | Severity | Medium |
-| Location | login(): resp.set_cookie() |
-| Reproduction | Inspect Set-Cookie after a successful local login. |
-| Observed result | The supplied header contains session and Path=/, without explicit HttpOnly, Secure or SameSite. Browser defaults may still apply. |
-| Impact | Missing HttpOnly exposes the cookie to scripts; missing Secure permits transmission over HTTP; unspecified SameSite leaves behavior to browser defaults. |
-| Mitigation | Set HttpOnly, Secure and an appropriate explicit SameSite policy; serve the deployed app over HTTPS. Add CSRF protection for state changes. |
+| Location | Vulnerable `login()`: `resp.set_cookie()` |
+| Root cause | The session cookie is issued without explicit HttpOnly, Secure or SameSite attributes. |
+| Reproduction | Inspect the Set-Cookie response header after a successful local login. |
+| Observed result | The supplied header contains the session cookie and `Path=/`, without explicit HttpOnly, Secure or SameSite. Browser defaults may still apply. |
+| Impact | Missing HttpOnly permits script access to the cookie; missing Secure permits transmission over HTTP; unspecified SameSite leaves handling to browser defaults. |
+| Mitigation | Set HttpOnly, Secure and an appropriate SameSite policy. Use HTTPS and CSRF protection for state-changing requests. |
 
-Evidence: [TO COMPLETE: link the supplied combined XSS/cookie-header screenshot using its actual saved filename.]
+**Evidence — Session Cookie Before Remediation**
 
 ![alt text](<img/f11-cookie flags.png>)
 
@@ -308,13 +322,16 @@ Finding F-12 — Application Commands Execute as Root in the Container
 | Field | Value |
 |---|---|
 | CWE / OWASP 2025 | CWE-250 / A02 Security Misconfiguration |
-| Severity | Medium as a separate hardening issue; amplifies F-04. |
-| Location | Container runtime user; Dockerfile/Compose must be inspected to locate the configuration. |
-| Reproduction | Review the id and whoami output from the export injection evidence. |
-| Observed result | uid=0 and root. |
-| Impact | Compromised application commands have root privileges inside the container. Host access is not established. |
-| Mitigation | Configure a dedicated non-root user, writable data directory and restricted runtime permissions. |
-| Limitation | No Dockerfile was supplied. This finding does not assert a separate secret baked into the image. The hard-coded source signing key is covered by F-03. |
+| Severity | Medium as a separate hardening issue; amplifies F-04 |
+| Location | Vulnerable Dockerfile and container runtime configuration |
+| Root cause | The original Dockerfile does not explicitly select a dedicated non-root user. |
+| Reproduction | Review the `id` and `whoami` output from the F-04 export-injection evidence. |
+| Observed result | Injected commands return `uid=0` and `root`. |
+| Impact | Application compromise allows commands to execute with root privileges inside the container. |
+| Mitigation | Configure a dedicated non-root user and restrict writable locations to those required by the application. |
+| Limitation | Host compromise and container escape were not demonstrated. The predictable application signing key is documented under F-03. |
+
+**Evidence:** See the command-execution screenshots under F-04.
 
 
 ---
